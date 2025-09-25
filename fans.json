@@ -115,7 +115,72 @@
       "power_w": 11,
       "noise_dba": 35,
       "mtbf_h": 40000
+    },
+    {
+      "brand": "Schrack",
+      "series": "Filter Fan",
+      "model": "IUKNF5523A (252 mm, 230 VAC)",
+      "size_mm": 252,
+      "voltage": "230 VAC",
+      "ip_rating": "IP54",
+      "flow_free_m3h": 256,
+      "flow_50pa_m3h": 233,
+      "power_w": 45,
+      "noise_dba": 55,
+      "mtbf_h": 40000
+    },
+    {
+      "brand": "Schrack",
+      "series": "Filter Fan",
+      "model": "IUKNF4523A (252 mm, 230 VAC)",
+      "size_mm": 252,
+      "voltage": "230 VAC",
+      "ip_rating": "IP54",
+      "flow_free_m3h": 156,
+      "flow_50pa_m3h": 145,
+      "power_w": 18,
+      "noise_dba": 50,
+      "mtbf_h": 40000
+    },
+    {
+      "brand": "Schrack",
+      "series": "Filter Fan",
+      "model": "IUKNF8523A (320 mm, 230 VAC)",
+      "size_mm": 320,
+      "voltage": "230 VAC",
+      "ip_rating": "IP54",
+      "flow_free_m3h": 845,
+      "flow_50pa_m3h": 560,
+      "power_w": 135,
+      "noise_dba": 68,
+      "mtbf_h": 40000
+    },
+    {
+      "brand": "Schrack",
+      "series": "Filter Fan",
+      "model": "IUKNF7523A (320 mm, 230 VAC)",
+      "size_mm": 320,
+      "voltage": "230 VAC",
+      "ip_rating": "IP54",
+      "flow_free_m3h": 640,
+      "flow_50pa_m3h": 445,
+      "power_w": 115,
+      "noise_dba": 66,
+      "mtbf_h": 40000
+    },
+    {
+      "brand": "Schrack",
+      "series": "Filter Fan",
+      "model": "IUKNF6523A (320 mm, 230 VAC)",
+      "size_mm": 320,
+      "voltage": "230 VAC",
+      "ip_rating": "IP54",
+      "flow_free_m3h": 480,
+      "flow_50pa_m3h": 370,
+      "power_w": 65,
+      "noise_dba": 63,
+      "mtbf_h": 40000
     }
-
+    
   ]
   
