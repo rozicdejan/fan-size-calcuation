@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
 import json, math, io, tempfile
+import plotly.io as pio
+import os
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 from reportlab.lib.pagesizes import A4
@@ -12,6 +14,14 @@ import plotly.graph_objects as go
 # --------------------------
 # Helper Functions
 # --------------------------
+def safe_write_image(fig, path, fmt="png", scale=2):
+    try:
+        fig.write_image(path, format=fmt, scale=scale)
+    except RuntimeError:
+        # fallback if no Chrome/Chromium is installed
+        with open(path, "w") as f:
+            f.write(fig.to_html(full_html=False, include_plotlyjs="cdn"))
+
 def calc_airflow(power_w, delta_t):
     """Required airflow from heat load and allowed ΔT."""
     if delta_t <= 0 or power_w <= 0:
@@ -181,9 +191,10 @@ def export_pdf(data_dict, redundancy_info=None, airflow_fig=None, redundancy_fig
 
     # Charts
     def add_fig(fig, title):
-        if not fig: return
+        if not fig:
+            return
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-            fig.write_image(tmp.name, format="png", scale=2)
+            safe_write_image(fig, tmp.name, fmt="png", scale=2)
             elements.append(Paragraph(title, styles['Heading2']))
             elements.append(Image(tmp.name, width=400, height=250))
             elements.append(Spacer(1, 16))
