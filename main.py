@@ -13,22 +13,25 @@ import plotly.graph_objects as go
 # Helper Functions
 # --------------------------
 def calc_airflow(power_w, delta_t):
+    """Required airflow from heat load and allowed ΔT."""
     if delta_t <= 0 or power_w <= 0:
         return 0, 0
-    return 3.0 * power_w / delta_t, 1.76 * power_w / delta_t
+    return 3.0 * power_w / delta_t, 1.76 * power_w / delta_t  # (m³/h, CFM)
 
-def calc_surface_area(h, w, d):
+def calc_surface_area(h, w, d):  # m²
     return 2 * (h*w + h*d + w*d)
 
-def calc_volume(h, w, d):
+def calc_volume(h, w, d):  # m³
     return h * w * d
 
 def calc_dew_point(temp_c, rh):
+    """Magnus formula (°C)."""
     a, b = 17.27, 237.7
     gamma = (a * temp_c) / (b + temp_c) + math.log(rh / 100.0)
     return (b * gamma) / (a - gamma)
 
 def calc_heater_power(volume_m3, dew_point, min_temp):
+    """Rule of thumb: 10 W per m³ per K above dew point (+2 °C safety)."""
     delta_t = max(0, dew_point - min_temp + 2)
     return 10 * volume_m3 * delta_t
 
@@ -41,17 +44,23 @@ def load_fan_db(file_path="fans.json"):
         return []
 
 def interpolated_flow_at_pressure(fan, static_pressure_pa):
+    """Linear interpolate between free-air and 50 Pa; extrapolate beyond 50 Pa."""
     q0 = fan.get("flow_free_m3h", 0.0)
     q50 = fan.get("flow_50pa_m3h", q0)
     p = max(0.0, static_pressure_pa)
 
     if p <= 50:
         return q0 - (p/50.0)*(q0 - q50)
-    slope = (q50 - q0) / 50.0
+    # extrapolate linearly past 50 Pa using same slope
+    slope = (q50 - q0) / 50.0  # negative
     q = q50 + (p - 50.0) * slope
     return max(q, 0.0)
 
 def select_fans(flow_req_m3h, fans, static_pressure_pa=0):
+    """
+    Choose a single fan model and count n s.t. n*Q(p) >= required.
+    Returns (recommendation_dict, fan_record) or (None, None)
+    """
     if not fans or flow_req_m3h <= 0:
         return None, None
 
@@ -73,6 +82,10 @@ def select_fans(flow_req_m3h, fans, static_pressure_pa=0):
     return best, best["fan_data"]
 
 def generate_pq_curves(fan, n_fans=1):
+    """
+    P–Q curves (all fans & one-fan-failed) from 0..100 Pa using interpolation model.
+    Returns pressures, flows_all, flows_fail (or None if n_fans==1)
+    """
     pressures = list(range(0, 101, 5))
     flows_all = [interpolated_flow_at_pressure(fan, p)*n_fans for p in pressures]
     flows_fail = [interpolated_flow_at_pressure(fan, p)*(n_fans-1) for p in pressures] if n_fans > 1 else None
@@ -82,6 +95,7 @@ def generate_pq_curves(fan, n_fans=1):
 # Export Helpers
 # --------------------------
 def export_excel(data_dict):
+    """Styled Excel datasheet."""
     wb = Workbook()
     ws = wb.active
     ws.title = "Fan Sizing"
@@ -114,6 +128,7 @@ def export_excel(data_dict):
     return bio
 
 def export_pdf(data_dict, redundancy_info=None, airflow_fig=None, redundancy_fig=None, pq_fig=None):
+    """PDF report with tables + charts."""
     bio = io.BytesIO()
     doc = SimpleDocTemplate(bio, pagesize=A4)
     styles = getSampleStyleSheet()
@@ -122,6 +137,7 @@ def export_pdf(data_dict, redundancy_info=None, airflow_fig=None, redundancy_fig
     elements.append(Paragraph("🌀 Electrical Cabinet Fan Sizing Report", styles['Title']))
     elements.append(Spacer(1, 12))
 
+    # Summary table
     table_data = [["Parameter", "Value"]]
     for k, v in data_dict.items():
         table_data.append([k, str(v)])
@@ -140,6 +156,30 @@ def export_pdf(data_dict, redundancy_info=None, airflow_fig=None, redundancy_fig
     elements.append(table)
     elements.append(Spacer(1, 16))
 
+    # Redundancy section
+    if redundancy_info:
+        elements.append(Paragraph("🛡️ Redundancy Check", styles['Heading2']))
+        elements.append(Paragraph("PASS ✅" if redundancy_info["pass"] else "FAIL ⚠️", styles['Normal']))
+        elements.append(Spacer(1, 10))
+        table2_data = [
+            ["Case", "Airflow (m³/h)"],
+            ["All fans running", str(int(redundancy_info["all_fans"]))],
+            ["1 fan failed", str(int(redundancy_info["one_failed"]))],
+            ["Required airflow", str(int(redundancy_info["required"]))],
+        ]
+        table2 = Table(table2_data, colWidths=[200, 250])
+        table2.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#c0504d")),
+            ("TEXTCOLOR", (0,0), (-1,0), colors.white),
+            ("ALIGN", (0,0), (-1,-1), "LEFT"),
+            ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+            ("FONTSIZE", (0,0), (-1,-1), 10),
+            ("GRID", (0,0), (-1,-1), 0.25, colors.grey),
+        ]))
+        elements.append(table2)
+        elements.append(Spacer(1, 16))
+
+    # Charts
     def add_fig(fig, title):
         if not fig: return
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
@@ -178,7 +218,7 @@ if page == "Fan Sizing Calculator":
         for i, val in enumerate(st.session_state.devices):
             st.session_state.devices[i] = st.number_input(f"Device {i+1} (W)", min_value=0.0, value=val, step=1.0)
         c1, c2 = st.columns(2)
-        with c1: 
+        with c1:
             if st.button("➕ Add Device"): st.session_state.devices.append(0.0)
         with c2:
             if st.button("➖ Remove Last") and len(st.session_state.devices) > 1: st.session_state.devices.pop()
@@ -227,21 +267,137 @@ if page == "Fan Sizing Calculator":
 
     delta_t = max_inside - ambient
     total_load = total_power + solar_power
-    st.markdown(f"### Heat Load")
+    st.markdown("### Heat Load")
     st.write(f"Devices: **{total_power:.1f} W**, Solar: **{solar_power:.1f} W**, Total: **{total_load:.1f} W**")
 
+    # Static pressure
     static_pressure = st.number_input("Expected static pressure drop (Pa)", value=50, step=10)
+
+    # Fan selection & charts
+    airflow_fig = None
+    redundancy_fig = None
+    pq_fig = None
+    redundancy_info = None
 
     fans = load_fan_db("fans.json")
     if total_load > 0 and delta_t > 0:
         airflow_m3h, airflow_cfm = calc_airflow(total_load, delta_t)
+        st.success(f"Required airflow: **{airflow_m3h:.0f} m³/h** (≈ {airflow_cfm:.0f} CFM)")
+
         margin_pct = st.slider("Safety margin (%)", 0, 100, 30, step=5)
         airflow_with_margin = airflow_m3h * (1 + margin_pct/100.0)
+        st.info(f"Recommended airflow with margin: **{airflow_with_margin:.0f} m³/h**")
 
         rec, fan_detail = select_fans(airflow_with_margin, fans, static_pressure)
         if rec:
             st.subheader("Recommended Fan Configuration")
-            st.success(f"✅ {rec['n']} × {rec['model']} (≈ {rec['flow_total']} m³/h, {rec['power_total']:.0f} W)")
+            st.success(
+                f"✅ **{rec['n']} × {rec['model']}**  "
+                f"(Total ≈ **{rec['flow_total']} m³/h**, **{rec['power_total']:.0f} W**)"
+            )
+            if fan_detail:
+                extras = []
+                for key, label in {
+                    "brand": "Brand", "series": "Series", "voltage": "Voltage",
+                    "ip_rating": "IP Rating", "size_mm": "Size (mm)",
+                    "noise_dba": "Noise (dB(A))", "mtbf_h": "MTBF (h)"
+                }.items():
+                    if key in fan_detail:
+                        extras.append(f"- {label}: **{fan_detail[key]}**")
+                if extras: st.markdown("\n".join(extras))
+
+        # Airflow vs ΔT chart
+        st.subheader("📊 Airflow Requirement vs ΔT")
+        delta_range = list(range(5, 31))
+        airflow_curve = [calc_airflow(total_load, dt)[0] for dt in delta_range]
+        airflow_fig = go.Figure()
+        airflow_fig.add_trace(go.Scatter(x=delta_range, y=airflow_curve, mode="lines+markers", name="Required airflow"))
+        airflow_fig.add_trace(go.Scatter(x=[delta_t], y=[airflow_m3h], mode="markers+text",
+                                         text=[f"{airflow_m3h:.0f} m³/h"], textposition="top center",
+                                         name="Chosen ΔT"))
+        airflow_fig.update_layout(xaxis_title="ΔT (°C)", yaxis_title="Airflow (m³/h)",
+                                  template="plotly_white")
+        st.plotly_chart(airflow_fig, use_container_width=True)
+
+        # Redundancy chart
+        if rec and rec["n"] > 1:
+            fail_one_flow = (rec["n"] - 1) * (rec["flow_total"] / rec["n"])
+            redundancy_info = {
+                "all_fans": rec["flow_total"],
+                "one_failed": fail_one_flow,
+                "required": airflow_with_margin,
+                "pass": fail_one_flow >= airflow_with_margin
+            }
+            redundancy_fig = go.Figure()
+            redundancy_fig.add_trace(go.Bar(x=["All fans", "1 failed"],
+                                            y=[rec["flow_total"], fail_one_flow],
+                                            name="Available airflow"))
+            redundancy_fig.add_trace(go.Scatter(x=["All fans", "1 failed"],
+                                                y=[airflow_with_margin, airflow_with_margin],
+                                                mode="lines", name="Required airflow",
+                                                line=dict(dash="dash")))
+            redundancy_fig.update_layout(yaxis_title="Airflow (m³/h)", template="plotly_white")
+            st.plotly_chart(redundancy_fig, use_container_width=True)
+            st.success("✅ Redundancy OK" if redundancy_info["pass"] else "⚠️ Redundancy NOT sufficient")
+        elif rec:
+            st.info("Redundancy check needs ≥ 2 fans.")
+
+        # P–Q curve with shading & one-failed curve
+        if rec and fan_detail:
+            st.subheader("📈 Fan P–Q Curve (with redundancy & requirement)")
+            pressures, flows_all, flows_fail = generate_pq_curves(fan_detail, rec["n"])
+
+            pq_fig = go.Figure()
+            # All fans curve
+            pq_fig.add_trace(go.Scatter(x=pressures, y=flows_all, mode="lines+markers",
+                                        name=f"All {rec['n']} fans", line=dict(color="blue")))
+            # One failed
+            if flows_fail:
+                pq_fig.add_trace(go.Scatter(x=pressures, y=flows_fail, mode="lines+markers",
+                                            name=f"{rec['n']-1} fans (1 failed)",
+                                            line=dict(color="orange", dash="dash")))
+            # Requirement line
+            pq_fig.add_trace(go.Scatter(x=[0, max(pressures)], y=[airflow_with_margin, airflow_with_margin],
+                                        mode="lines", name="Required airflow",
+                                        line=dict(color="red", dash="dot")))
+            # Shading: green above requirement under "all fans"
+            pq_fig.add_trace(go.Scatter(
+                x=pressures + pressures[::-1],
+                y=flows_all + [airflow_with_margin]*len(pressures),
+                fill="toself", fillcolor="rgba(0,200,0,0.12)",
+                line=dict(color="rgba(0,0,0,0)"), hoverinfo="skip", showlegend=False
+            ))
+            # Shading: red below requirement
+            pq_fig.add_trace(go.Scatter(
+                x=pressures + pressures[::-1],
+                y=[0]*len(pressures) + [airflow_with_margin]*len(pressures),
+                fill="toself", fillcolor="rgba(200,0,0,0.10)",
+                line=dict(color="rgba(0,0,0,0)"), hoverinfo="skip", showlegend=False
+            ))
+            pq_fig.update_layout(xaxis_title="Static Pressure (Pa)", yaxis_title="Airflow (m³/h)",
+                                 template="plotly_white")
+            st.plotly_chart(pq_fig, use_container_width=True)
+
+        # Export data
+        export_data = {
+            "Device Dissipation (W)": f"{total_power:.1f}",
+            "Solar Gain (W)": f"{solar_power:.1f}",
+            "Total Heat Load (W)": f"{total_load:.1f}",
+            "Ambient Temp (°C)": f"{ambient:.1f}",
+            "Relative Humidity (%)": f"{humidity}",
+            "Dew Point (°C)": f"{dew_point:.1f}",
+            "Heater Power Suggestion (W)": f"{heater_power:.0f}",
+            "Max Cabinet Temp (°C)": f"{max_inside:.1f}",
+            "Delta T (°C)": f"{delta_t:.1f}",
+            "Static Pressure (Pa)": f"{static_pressure}",
+            "Required Airflow (m³/h)": f"{airflow_m3h:.0f}",
+            "Required Airflow (CFM)": f"{airflow_cfm:.0f}",
+            "Airflow with Margin (m³/h)": f"{airflow_with_margin:.0f}"
+        }
+        if rec:
+            export_data["Fan Recommendation"] = f"{rec['n']} × {rec['model']}"
+            export_data["Total Fan Flow (m³/h)"] = f"{rec['flow_total']}"
+            export_data["Total Fan Power (W)"] = f"{rec['power_total']:.0f}"
             if fan_detail:
                 for k, label in {
                     "brand": "Brand", "series": "Series", "voltage": "Voltage",
@@ -249,7 +405,21 @@ if page == "Fan Sizing Calculator":
                     "noise_dba": "Noise (dB(A))", "mtbf_h": "MTBF (h)"
                 }.items():
                     if k in fan_detail:
-                        st.write(f"{label}: **{fan_detail[k]}**")
+                        export_data[label] = str(fan_detail[k])
+
+        # Export buttons
+        c1, c2 = st.columns(2)
+        with c1:
+            st.download_button("📊 Download Excel",
+                               export_excel(export_data),
+                               file_name="fan_sizing.xlsx")
+        with c2:
+            st.download_button("📄 Download PDF",
+                               export_pdf(export_data, redundancy_info, airflow_fig, redundancy_fig, pq_fig),
+                               file_name="fan_sizing.pdf",
+                               mime="application/pdf")
+    else:
+        st.warning("Please input valid wattage and ensure ΔT > 0.")
 
 # --------------------------
 # Page 2: Fan Database Explorer
@@ -264,21 +434,21 @@ elif page == "Fan Database Explorer":
         df = pd.DataFrame(fans)
 
         st.sidebar.subheader("Filter Options")
-        brands = st.sidebar.multiselect("Brand", options=df["brand"].unique())
-        voltages = st.sidebar.multiselect("Voltage", options=df["voltage"].unique())
-        ip_ratings = st.sidebar.multiselect("IP Rating", options=df["ip_rating"].unique())
+        brands = st.sidebar.multiselect("Brand", options=sorted(df["brand"].dropna().unique().tolist()))
+        voltages = st.sidebar.multiselect("Voltage", options=sorted(df["voltage"].dropna().unique().tolist()))
+        ip_ratings = st.sidebar.multiselect("IP Rating", options=sorted(df["ip_rating"].dropna().unique().tolist()))
+
+        # Range defaults guarded against empty/NaN
+        flow_min = int(df["flow_free_m3h"].min()) if len(df) else 0
+        flow_max = int(df["flow_free_m3h"].max()) if len(df) else 1000
+        pwr_min = int(df["power_w"].min()) if len(df) else 0
+        pwr_max = int(df["power_w"].max()) if len(df) else 500
 
         min_flow, max_flow = st.sidebar.slider(
-            "Flow (m³/h, free-air)", 
-            int(df["flow_free_m3h"].min()), 
-            int(df["flow_free_m3h"].max()), 
-            (int(df["flow_free_m3h"].min()), int(df["flow_free_m3h"].max()))
+            "Flow (m³/h, free-air)", flow_min, flow_max, (flow_min, flow_max)
         )
         min_power, max_power = st.sidebar.slider(
-            "Power (W)", 
-            int(df["power_w"].min()), 
-            int(df["power_w"].max()), 
-            (int(df["power_w"].min()), int(df["power_w"].max()))
+            "Power (W)", pwr_min, pwr_max, (pwr_min, pwr_max)
         )
 
         filtered = df.copy()
