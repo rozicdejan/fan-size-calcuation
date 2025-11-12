@@ -1,3 +1,4 @@
+import os
 import math
 import pandas as pd
 import plotly.graph_objects as go
@@ -38,6 +39,37 @@ def default_fans():
         {"name": "Fan 1000","airflow_m3h": 1000,"noise_dBA": 50, "power_W": 20.0},
     ])
 
+def coerce_numbers(df: pd.DataFrame) -> pd.DataFrame:
+    for c in ["airflow_m3h", "noise_dBA", "power_W"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    return df
+
+@st.cache_data
+def load_startup_catalog() -> pd.DataFrame:
+    """
+    Tries to load a local CSV on startup:
+    - 'fanss_catalog.csv' (your file)
+    - fallback 'fan_catalog.csv'
+    - fallback to defaults
+    """
+    for fname in ["fans_catalog.csv", "fan_catalog.csv"]:
+        if os.path.exists(fname):
+            try:
+                df = pd.read_csv(fname)
+                df = coerce_numbers(df)
+                return df
+            except Exception:
+                pass
+    return default_fans()
+
+def pick_first_ge(df: pd.DataFrame, col: str, threshold: float):
+    """Return first row with df[col] >= threshold or None if not found."""
+    hits = df.loc[df[col] >= threshold]
+    if len(hits):
+        return hits.iloc[0]
+    return None
+
 # --------------------------
 # Sidebar inputs
 # --------------------------
@@ -56,29 +88,40 @@ else:
     st.sidebar.caption(f"ΔT = {delta_t_limit:.1f} K")
 
 st.sidebar.divider()
-margin_pct = st.sidebar.number_input("Airflow safety margin (%)", value=20, min_value=0, max_value=200, step=5,
-                                     help="Adds margin to required airflow for filters/ducts/obstructions.")
+margin_pct = st.sidebar.number_input(
+    "Airflow safety margin (%)", value=20, min_value=0, max_value=200, step=5,
+    help="Adds margin to required airflow for filters/ducts/obstructions."
+)
 
 st.sidebar.divider()
 st.sidebar.subheader("Fan catalog")
 uploaded = st.sidebar.file_uploader("Upload CSV (name, airflow_m3h, noise_dBA, power_W)", type=["csv"])
+use_startup = st.sidebar.toggle("Load local fans_catalog.csv on startup", value=True)
+save_back = st.sidebar.toggle("Enable 'Save to fans_catalog.csv'", value=True)
 
+# Session state init
 if "fans_df" not in st.session_state:
-    st.session_state["fans_df"] = default_fans()
+    st.session_state["fans_df"] = load_startup_catalog() if use_startup else default_fans()
 
+# Handle upload
 if uploaded:
     try:
         user_df = pd.read_csv(uploaded)
-        needed_cols = {"name", "airflow_m3h"}
-        if not needed_cols.issubset(user_df.columns):
+        if not {"name", "airflow_m3h"}.issubset(user_df.columns):
             st.sidebar.error("CSV must include at least: 'name', 'airflow_m3h'")
         else:
-            st.session_state["fans_df"] = user_df
+            # add optional columns if missing
+            if "noise_dBA" not in user_df.columns:
+                user_df["noise_dBA"] = pd.NA
+            if "power_W" not in user_df.columns:
+                user_df["power_W"] = pd.NA
+            st.session_state["fans_df"] = coerce_numbers(user_df)
     except Exception as e:
         st.sidebar.error(f"Failed to parse CSV: {e}")
 
 fans_df = st.session_state["fans_df"].copy()
-fans_df = fans_df.sort_values("airflow_m3h").reset_index(drop=True)
+fans_df = coerce_numbers(fans_df)
+fans_df = fans_df.sort_values("airflow_m3h", na_position="last").reset_index(drop=True)
 
 # --------------------------
 # Headline & metrics
@@ -88,8 +131,9 @@ st.caption("Formula: **P = ρ · cₚ · (m³/h / 3600) · ΔT ≈ 0.335 · airf
 
 raw_req_airflow = required_airflow(power_w, delta_t_limit)
 req_airflow = raw_req_airflow * (1.0 + margin_pct/100.0)
-reco_idx = (fans_df["airflow_m3h"] >= req_airflow).idxmin() if (fans_df["airflow_m3h"] >= req_airflow).any() else None
-recommended = fans_df.loc[reco_idx] if reco_idx is not None else None
+
+# Correct: pick first fan with airflow >= requirement
+recommended = pick_first_ge(fans_df, "airflow_m3h", req_airflow)
 
 m1, m2, m3, m4, m5 = st.columns(5)
 m1.metric("Power", f"{power_w:,.0f} W")
@@ -105,14 +149,17 @@ else:
 # Selection chart (linear)
 # --------------------------
 st.subheader("Selection chart")
-iso_dts = [5, 10, 15, 20, 25, 30]  # Keep same isolines as your image
-max_airflow_axis = max(1.2*req_airflow, fans_df["airflow_m3h"].max()*1.15, 300.0)
+iso_dts = [5, 10, 15, 20, 25, 30]  # same isolines
+max_airflow_axis = max(1.2*req_airflow,
+                       float(fans_df["airflow_m3h"].max() or 0)*1.15,
+                       300.0)
 max_power_axis = max(power_w*1.35, power_from_airflow(max_airflow_axis, max(iso_dts)), 800.0)
 
 fig = go.Figure()
 
-# ΔT ISO-LINES (green)
-x_vals = list(range(0, int(max_airflow_axis)+1, max(1, int(max_airflow_axis//60))))  # ~60 points
+# ΔT ISO-LINES
+step = max(1, int(max_airflow_axis//60) or 1)   # ~60 points, no zero step
+x_vals = list(range(0, int(max_airflow_axis)+1, step))
 for dt in iso_dts:
     y_vals = [power_from_airflow(x, dt) for x in x_vals]
     fig.add_trace(go.Scatter(
@@ -121,7 +168,7 @@ for dt in iso_dts:
         hovertemplate="Airflow: %{x:.0f} m³/h<br>P: %{y:.0f} W<br>ΔT: "+str(dt)+" K<extra></extra>"
     ))
 
-# Required point + red dashed guides (like the catalog)
+# Required point + red dashed guides
 fig.add_trace(go.Scatter(
     x=[req_airflow], y=[power_w], mode="markers",
     marker=dict(size=10, symbol="x"),
@@ -133,7 +180,6 @@ fig.add_hline(y=power_w, line=dict(dash="dash"), line_color="red",
 fig.add_vline(x=req_airflow, line=dict(dash="dash"), line_color="red",
               annotation_text=f"{req_airflow:.0f} m³/h", annotation_position="top")
 
-# Axis & grid styling (keeps linear scale)
 fig.update_layout(
     xaxis_title="Air Flow (m³/h)",
     yaxis_title="Power dissipation (W)",
@@ -169,28 +215,24 @@ with left:
     )
     st.session_state["fans_df"] = fans_df
 
-    # quick badges
     meets = (fans_df["airflow_m3h"] >= req_airflow).sum()
-    st.caption(f"✅ Meets requirement: **{meets}**  |  ❌ Below requirement: **{len(fans_df)-meets}**")
+    st.caption(f"✅ Meets requirement: **{int(meets)}**  |  ❌ Below requirement: **{int(len(fans_df)-meets)}**")
 
-    # Optional CSV download
+    # Save & download
     csv = fans_df.to_csv(index=False).encode("utf-8")
-    st.download_button("💾 Download catalog CSV", data=csv, file_name="fan_catalog.csv", mime="text/csv")
+    st.download_button("💾 Download catalog CSV", data=csv, file_name="fans_export.csv", mime="text/csv")
+    if save_back and st.button("Save edits to fans_catalog.csv"):
+        fans_df.to_csv("fans_catalog.csv", index=False)
+        st.success("Saved to fans_catalog.csv")
 
 with right:
     fans_df = fans_df.copy()
-    fans_df["meets_requirement"] = fans_df["airflow_m3h"] >= req_airflow
     fans_df["label"] = fans_df.apply(lambda r: f"{r['name']} — {r['airflow_m3h']:.0f} m³/h", axis=1)
 
-    # Choose a fan to highlight
-    sel = st.selectbox(
-        "Highlight a fan",
-        options=["(none)"] + fans_df["name"].tolist(),
-        index=0
-    )
+    sel = st.selectbox("Highlight a fan", options=["(none)"] + fans_df["name"].dropna().tolist(), index=0)
 
     bar_fig = px.bar(
-        fans_df.sort_values("airflow_m3h"),
+        fans_df.sort_values("airflow_m3h", na_position="last"),
         x="airflow_m3h",
         y="label",
         orientation="h",
@@ -199,8 +241,7 @@ with right:
     )
     bar_fig.add_vline(x=req_airflow, line=dict(dash="dash", color="red"))
 
-    # highlight selected fan with a marker
-    if sel != "(none)":
+    if sel != "(none)" and (fans_df["name"] == sel).any():
         row = fans_df.loc[fans_df["name"] == sel].iloc[0]
         bar_fig.add_trace(go.Scatter(
             x=[row["airflow_m3h"]],
